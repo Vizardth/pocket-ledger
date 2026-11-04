@@ -1,0 +1,28 @@
+# --- Signing keys: NEVER upload these ---
+*.jks
+*.keystore
+keystore.properties
+signing/
+
+# --- Built apps: attach these to a GitHub Release instead ---
+*.apk
+*.aab
+android/app/release/
+
+# --- Dependencies and build output (recreated by npm install / Gradle) ---
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# --- Personal data exports: keep them out of the repo ---
+pocket-ledger-backup-*.json
+pocket-ledger-*.csv
+pocket-ledger-report-*.md
+
+# --- System files ---
+.DS_Store
+Thumbs.db
