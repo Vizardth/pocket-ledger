@@ -544,3 +544,47 @@ textarea:focus-visible {
     from { transform: translateY(24px); }
   }
 }
+
+/* ---------- Categories ---------- */
+
+.label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+.linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.cat-add[hidden] { display: none; }
+
+.inline-add { display: flex; gap: 8px; }
+.inline-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.cat-group { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.cat-group .strong { font-weight: 700; }
+
+.cat-list { margin: 0; padding: 0; list-style: none; }
+
+.cat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cat-row:last-child { border-bottom: 0; }
+.cat-row .btn.small { padding: 6px 10px; }

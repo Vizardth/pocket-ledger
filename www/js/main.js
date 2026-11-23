@@ -5,6 +5,7 @@ import { ui } from "./state.js";
 import { render } from "./views.js";
 import { paymentFor, dueDayIn } from "./finance.js";
 import { openEntrySheet, openBillSheet, closeSheet } from "./sheets.js";
+import { addCategory, removeCategory } from "./categories.js";
 import { exportFile, copyReport, restoreFromFile, hasData } from "./files.js";
 import { analyzeMonth } from "./claude-api.js";
 import { scheduleReminders, setRemindersEnabled, initReminders } from "./reminders.js";
@@ -36,6 +37,27 @@ function toggleBillPaid(billId) {
     toast(`${bill.name} paid`);
   }
   saveData();
+  render();
+}
+
+function addCategoryFromSettings(type) {
+  const input = document.getElementById("newcat-" + type);
+  const { error, name } = addCategory(type, input.value);
+  if (error) {
+    toast(error);
+    input.focus();
+    return;
+  }
+  toast(`Added "${name}"`);
+  render();
+}
+
+function removeCategoryFromSettings(button, type, index) {
+  const name = data.cats[type]?.[index];
+  if (name === undefined || !confirmTap(button, "Tap again")) return;
+  const { error, kept } = removeCategory(type, name);
+  if (error) toast(error);
+  else toast(kept ? `Removed. ${kept} old ${kept === 1 ? "entry keeps" : "entries keep"} "${name}".` : `Removed "${name}"`);
   render();
 }
 
@@ -93,7 +115,7 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button || button.closest("#sheetRoot")) return; // sheets handle their own buttons
 
-  const { tab, goto, editTx, editBill, pay } = button.dataset;
+  const { tab, goto, editTx, editBill, pay, addCat, removeCat, catType } = button.dataset;
   const exportKind = button.dataset.export;
 
   if (tab || goto) {
@@ -106,6 +128,10 @@ document.addEventListener("click", (event) => {
     openBillSheet(data.bills.find((b) => b.id === editBill));
   } else if (pay) {
     toggleBillPaid(pay);
+  } else if (addCat) {
+    addCategoryFromSettings(addCat);
+  } else if (removeCat) {
+    removeCategoryFromSettings(button, catType, Number(removeCat));
   } else if (exportKind) {
     exportFile(exportKind);
   } else if (BUTTON_ACTIONS[button.id]) {

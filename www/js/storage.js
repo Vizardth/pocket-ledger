@@ -2,7 +2,7 @@
 // In the Android app: Capacitor Preferences (private app storage).
 // In a browser (for testing): localStorage.
 
-import { STORAGE_KEYS, DEFAULT_MODEL } from "./config.js";
+import { STORAGE_KEYS, DEFAULT_MODEL, INCOME_CATEGORIES, EXPENSE_CATEGORIES } from "./config.js";
 import { toast } from "./utils.js";
 
 /** True when running inside the installed Android app. */
@@ -13,6 +13,7 @@ export const data = {
   tx: [],    // { id, type: "income"|"expense", amount, category, date, note, createdAt }
   bills: [], // { id, name, amount, dueDay, kind: "bill"|"credit", category, startMonth, installments }
   pays: [],  // { id, billId, month, name, category, kind, amount, paidOn }
+  cats: { income: [...INCOME_CATEGORIES], expense: [...EXPENSE_CATEGORIES] }, // your category lists
 };
 
 /** User settings. Mutated in place, then saved with saveSettings(). */
@@ -48,10 +49,15 @@ export async function loadAll() {
 }
 
 /** Swap in a whole new set of records (used by restore and "delete all"). */
-export function replaceData({ tx = [], bills = [], pays = [] }) {
+export function replaceData({ tx = [], bills = [], pays = [], cats = null }) {
   data.tx = tx;
   data.bills = bills;
   data.pays = pays;
+  // Older saves and backups have no category list, and "delete all" passes none:
+  // in both cases keep the current list.
+  if (Array.isArray(cats?.income) && Array.isArray(cats?.expense) && cats.income.length && cats.expense.length) {
+    data.cats = { income: cats.income.map(String), expense: cats.expense.map(String) };
+  }
 }
 
 // Other modules can react after each save (e.g. reschedule bill reminders).

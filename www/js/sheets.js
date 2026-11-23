@@ -1,6 +1,7 @@
 // Bottom-sheet forms for adding and editing entries and bills.
 
-import { INCOME_CATEGORIES, EXPENSE_CATEGORIES, BILL_CATEGORY, CREDIT_CATEGORY } from "./config.js";
+import { BILL_CATEGORY, CREDIT_CATEGORY } from "./config.js";
+import { categoriesFor, addCategory } from "./categories.js";
 import { data, saveData } from "./storage.js";
 import { ui } from "./state.js";
 import { render } from "./views.js";
@@ -72,8 +73,11 @@ function openSheet(innerHtml, onSubmit, onDelete = null) {
   return form;
 }
 
+// A removed category stays selectable on the old entries that use it,
+// so saving an old entry never quietly moves it to another category.
 const optionsHtml = (list, selected) =>
-  list.map((item) => `<option ${item === selected ? "selected" : ""}>${esc(item)}</option>`).join("");
+  (selected && !list.includes(selected) ? [...list, selected] : list)
+    .map((item) => `<option ${item === selected ? "selected" : ""}>${esc(item)}</option>`).join("");
 
 /** Wire a two-button segmented control; calls onChange(value) when a side is picked. */
 function bindSegment(form, attribute, onChange) {
@@ -91,7 +95,6 @@ function bindSegment(form, attribute, onChange) {
 // ---------- Income / expense entry ----------
 
 const notePlaceholder = (type) => (type === "income" ? "e.g. Freelance design job" : "e.g. Lunch, Grab to office");
-const categoriesFor = (type) => (type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
 
 /** Add a new entry, or edit `entry` when given. */
 export function openEntrySheet(entry = null) {
@@ -110,12 +113,22 @@ export function openEntrySheet(entry = null) {
     </div>
     <div class="two">
       <div class="field">
-        <label for="f-cat">Category</label>
+        <div class="label-row">
+          <label for="f-cat">Category</label>
+          <button type="button" class="linkbtn" id="catNew" aria-expanded="false">+ New</button>
+        </div>
         <select id="f-cat" name="category">${optionsHtml(categoriesFor(type), entry?.category)}</select>
       </div>
       <div class="field">
         <label for="f-date">Date</label>
         <input id="f-date" type="date" name="date" value="${defaultDate}">
+      </div>
+    </div>
+    <div class="field cat-add" id="catAdd" hidden>
+      <label for="f-newcat">New category</label>
+      <div class="inline-add">
+        <input id="f-newcat" maxlength="30" autocomplete="off" placeholder="e.g. Pets, Coffee">
+        <button type="button" class="btn" id="catSave">Add</button>
       </div>
     </div>
     <div class="field">
@@ -153,10 +166,42 @@ export function openEntrySheet(entry = null) {
     : null;
 
   const form = openSheet(html, onSubmit, onDelete);
+  const catSelect = form.querySelector("#f-cat");
+  const catAdd = form.querySelector("#catAdd");
+  const catInput = form.querySelector("#f-newcat");
+  const catToggle = form.querySelector("#catNew");
+
+  const showCatAdd = (show) => {
+    catAdd.hidden = !show;
+    catToggle.setAttribute("aria-expanded", String(show));
+    if (show) catInput.focus();
+  };
+  const saveNewCategory = () => {
+    const { error, name } = addCategory(type, catInput.value);
+    if (error) {
+      toast(error);
+      return;
+    }
+    catSelect.innerHTML = optionsHtml(categoriesFor(type), name);
+    catInput.value = "";
+    showCatAdd(false);
+    toast(`Added "${name}"`);
+  };
+
+  catToggle.addEventListener("click", () => showCatAdd(catAdd.hidden));
+  form.querySelector("#catSave").addEventListener("click", saveNewCategory);
+  catInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault(); // don't submit the entry
+      saveNewCategory();
+    }
+  });
+
   bindSegment(form, "type", (value) => {
     type = value;
-    form.querySelector("#f-cat").innerHTML = optionsHtml(categoriesFor(type));
+    catSelect.innerHTML = optionsHtml(categoriesFor(type));
     form.querySelector("#f-note").placeholder = notePlaceholder(type);
+    showCatAdd(false);
   });
 }
 

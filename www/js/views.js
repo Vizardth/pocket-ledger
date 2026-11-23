@@ -2,6 +2,7 @@
 
 import { CLAUDE_MODELS, BACKUP_REMINDER_DAYS } from "./config.js";
 import { data, settings, IS_NATIVE } from "./storage.js";
+import { LOCKED_CATEGORIES } from "./categories.js";
 import { ui } from "./state.js";
 import {
   summarizeMonth, billsForMonth, paymentFor, savingHints,
@@ -239,6 +240,35 @@ function analysisPanel(month) {
 
 // ---------- Export / settings tab ----------
 
+function categoryList(type, title) {
+  const rows = data.cats[type].map((name, index) => {
+    const action = LOCKED_CATEGORIES.includes(name)
+      ? `<span class="muted small">used by bills</span>`
+      : `<button class="btn small" data-remove-cat="${index}" data-cat-type="${type}" aria-label="Remove ${esc(name)}">Remove</button>`;
+    return `<li class="cat-row"><span>${esc(name)}</span>${action}</li>`;
+  }).join("");
+
+  return `
+    <div class="cat-group">
+      <div class="small strong">${title}</div>
+      <ul class="cat-list">${rows}</ul>
+      <div class="inline-add">
+        <input id="newcat-${type}" maxlength="30" autocomplete="off" placeholder="New ${type} category" aria-label="New ${type} category">
+        <button class="btn" data-add-cat="${type}">Add</button>
+      </div>
+    </div>`;
+}
+
+function categoriesPanel() {
+  return `
+    <div class="panel cardpad">
+      <div class="label">Categories</div>
+      <div class="muted small">Removing a category hides it from new entries. Old entries keep it, so past reports don't change.</div>
+      ${categoryList("expense", "Expense")}
+      ${categoryList("income", "Income")}
+    </div>`;
+}
+
 function moreView() {
   const hasData = data.tx.length || data.bills.length;
   const daysSinceBackup = settings.lastBackup ? Math.floor((Date.now() - settings.lastBackup) / 864e5) : null;
@@ -289,6 +319,8 @@ function moreView() {
       </div>
 
       ${remindersPanel}
+
+      ${categoriesPanel()}
 
       <div class="panel cardpad">
         <div class="label">Claude API (optional)</div>
