@@ -1,12 +1,14 @@
 // Bottom-sheet forms for adding and editing entries and bills.
 
-import { BILL_CATEGORY, CREDIT_CATEGORY } from "./config.js";
+import { BILL_CATEGORY, CREDIT_CATEGORY, PAYDAY_ROLLOVER_DAY } from "./config.js";
 import { categoriesFor, addCategory } from "./categories.js";
 import { data, saveData } from "./storage.js";
 import { ui } from "./state.js";
 import { render } from "./views.js";
+import { dueDayIn, balanceAt } from "./finance.js";
 import {
   escapeHtml as esc, parseAmount, groupDigits, newId, toast, todayISO, thisMonth,
+  addMonths, monthLabel, money, pad2,
 } from "./utils.js";
 
 // ---------- Generic sheet ----------
@@ -96,10 +98,18 @@ function bindSegment(form, attribute, onChange) {
 
 const notePlaceholder = (type) => (type === "income" ? "e.g. Freelance design job" : "e.g. Lunch, Grab to office");
 
+/** The month after the one a "YYYY-MM-DD" date falls in. */
+const monthAfter = (date) => addMonths((date || todayISO).slice(0, 7), 1);
+
+/** New income received late in the month counts toward next month by default. */
+const defaultsToNextMonth = (date) => Number((date || todayISO).slice(8, 10)) >= PAYDAY_ROLLOVER_DAY;
+
 /** Add a new entry, or edit `entry` when given. */
 export function openEntrySheet(entry = null) {
   let type = entry?.type || "expense";
   const defaultDate = entry?.date || (ui.month === thisMonth ? todayISO : ui.month + "-01");
+  let countsNext = entry ? Boolean(entry.budgetMonth) : defaultsToNextMonth(defaultDate);
+  let countsNextTouched = Boolean(entry); // don't overwrite a choice already made
 
   const html = `
     <h2>${entry ? "Edit entry" : "New entry"}</h2>
@@ -134,7 +144,12 @@ export function openEntrySheet(entry = null) {
     <div class="field">
       <label for="f-note">Note</label>
       <input id="f-note" name="note" maxlength="80" placeholder="${notePlaceholder(type)}" value="${esc(entry?.note || "")}">
-    </div>`;
+    </div>
+    <label class="checkfield" id="nextWrap" ${type === "income" ? "" : "hidden"}>
+      <input type="checkbox" id="f-next" ${countsNext ? "checked" : ""}>
+      <span>Counts toward <b id="nextLabel">${monthLabel(monthAfter(defaultDate))}</b>'s budget
+        <span class="muted small">Use for salary that pays for the month ahead.</span></span>
+    </label>`;
 
   const onSubmit = (form) => {
     const amount = parseAmount(form.get("amount"));
@@ -142,15 +157,21 @@ export function openEntrySheet(entry = null) {
       toast("Enter an amount above zero.");
       return false;
     }
+    const date = form.get("date") || todayISO;
     const fields = {
       type,
       amount,
       category: form.get("category"),
-      date: form.get("date") || todayISO,
+      date,
       note: String(form.get("note") || "").trim(),
     };
-    if (entry) Object.assign(entry, fields);
-    else data.tx.push({ id: newId(), ...fields, createdAt: Date.now() });
+    if (type === "income" && countsNext) fields.budgetMonth = monthAfter(date);
+    if (entry) {
+      delete entry.budgetMonth; // re-set below only if still ticked
+      Object.assign(entry, fields);
+    } else {
+      data.tx.push({ id: newId(), ...fields, createdAt: Date.now() });
+    }
     saveData();
     toast(entry ? "Entry updated" : "Entry saved");
     render();
@@ -197,11 +218,140 @@ export function openEntrySheet(entry = null) {
     }
   });
 
+  const nextWrap = form.querySelector("#nextWrap");
+  const nextBox = form.querySelector("#f-next");
+  const dateInput = form.querySelector("#f-date");
+  nextBox.addEventListener("change", () => {
+    countsNext = nextBox.checked;
+    countsNextTouched = true;
+  });
+  dateInput.addEventListener("change", () => {
+    form.querySelector("#nextLabel").textContent = monthLabel(monthAfter(dateInput.value));
+    if (!countsNextTouched) nextBox.checked = countsNext = defaultsToNextMonth(dateInput.value);
+  });
+
   bindSegment(form, "type", (value) => {
     type = value;
     catSelect.innerHTML = optionsHtml(categoriesFor(type));
     form.querySelector("#f-note").placeholder = notePlaceholder(type);
+    nextWrap.hidden = type !== "income";
     showCatAdd(false);
+  });
+}
+
+// ---------- Setting the balance ----------
+
+/** Set the running balance to what you really have; the difference is saved as a correction. */
+export function openBalanceSheet() {
+  const current = balanceAt();
+  const isFirst = !data.adjust.length;
+
+  const html = `
+    <h2>${isFirst ? "Set your starting balance" : "Correct your balance"}</h2>
+    <div class="muted small">${isFirst
+      ? "Add up what you have right now: bank accounts, e-wallets and cash. From here on the app adds income and subtracts spending."
+      : `The app thinks you have ${money(current)}. If your bank, e-wallets and cash add up to something else, enter the real total.`}</div>
+    <div class="field">
+      <label for="a-amt">What you have now (Rp)</label>
+      <input id="a-amt" name="amount" class="bigamt" inputmode="numeric" data-money autocomplete="off" autofocus>
+    </div>
+    <div class="field">
+      <label for="a-note">Note</label>
+      <input id="a-note" name="note" maxlength="80" placeholder="${isFirst ? "Starting balance" : "e.g. Forgot some cash purchases"}">
+    </div>
+    <div class="muted small" id="a-diff"></div>`;
+
+  const onSubmit = (form) => {
+    const raw = String(form.get("amount") || "").trim();
+    if (!raw) {
+      toast("Enter how much you have now.");
+      return false;
+    }
+    const difference = parseAmount(raw) - current;
+    if (!difference) {
+      toast("Already matches. Nothing to change.");
+      return;
+    }
+    data.adjust.push({
+      id: newId(),
+      date: todayISO,
+      amount: difference,
+      note: String(form.get("note") || "").trim() || (isFirst ? "Starting balance" : "Balance correction"),
+    });
+    saveData();
+    toast(isFirst ? "Starting balance set" : "Balance corrected");
+    render();
+  };
+
+  const form = openSheet(html, onSubmit);
+  const diff = form.querySelector("#a-diff");
+  form.querySelector("#a-amt").addEventListener("input", (e) => {
+    const change = parseAmount(e.target.value) - current;
+    diff.textContent = e.target.value && change
+      ? `Adds a correction of ${change > 0 ? "+" : "−"}${money(Math.abs(change))}. It isn't counted as income or spending.`
+      : "";
+  });
+}
+
+// ---------- Paying a bill ----------
+
+/** Mark `bill` paid for `month`, with the amount actually paid and any discount or voucher. */
+export function openPaySheet(bill, month) {
+  // Paying this month or ahead of time: today. Catching up on a past month: its due date.
+  const defaultPaidOn = month >= thisMonth ? todayISO : `${month}-${pad2(dueDayIn(bill, month))}`;
+
+  const html = `
+    <h2>Pay ${esc(bill.name)}</h2>
+    <div class="muted small">${monthLabel(month)} · due ${dueDayIn(bill, month)}</div>
+    <div class="field">
+      <label for="p-amt">Bill amount (Rp)</label>
+      <input id="p-amt" name="amount" class="bigamt" inputmode="numeric" data-money autocomplete="off" value="${groupDigits(bill.amount)}">
+    </div>
+    <div class="two">
+      <div class="field">
+        <label for="p-disc">Discount / voucher (Rp)</label>
+        <input id="p-disc" name="discount" inputmode="numeric" data-money class="num" autocomplete="off" placeholder="0">
+      </div>
+      <div class="field">
+        <label for="p-date">Paid on</label>
+        <input id="p-date" type="date" name="paidOn" value="${defaultPaidOn}">
+      </div>
+    </div>
+    <div class="muted small" id="p-total">You pay ${money(bill.amount)}</div>`;
+
+  const onSubmit = (form) => {
+    const billed = parseAmount(form.get("amount"));
+    const discount = parseAmount(form.get("discount"));
+    if (!billed) {
+      toast("Enter the bill amount.");
+      return false;
+    }
+    if (discount >= billed) {
+      toast("The discount must be less than the bill.");
+      return false;
+    }
+    const payment = {
+      id: newId(),
+      billId: bill.id,
+      month,
+      name: bill.name,
+      category: bill.category,
+      kind: bill.kind,
+      amount: billed - discount,
+      paidOn: form.get("paidOn") || defaultPaidOn,
+    };
+    if (discount) Object.assign(payment, { billed, discount });
+    data.pays.push(payment);
+    saveData();
+    toast(discount ? `${bill.name} paid, saved ${money(discount)}` : `${bill.name} paid`);
+    render();
+  };
+
+  const form = openSheet(html, onSubmit);
+  const total = form.querySelector("#p-total");
+  form.addEventListener("input", () => {
+    const paid = parseAmount(form.querySelector("#p-amt").value) - parseAmount(form.querySelector("#p-disc").value);
+    total.textContent = paid > 0 ? `You pay ${money(paid)}` : "The discount must be less than the bill.";
   });
 }
 

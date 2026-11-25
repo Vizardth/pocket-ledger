@@ -38,9 +38,14 @@ export function dueDayIn(bill, month) {
 
 // ---------- Monthly summary ----------
 
+/** The month an entry counts toward: its budget month if set, otherwise the month of its date. */
+export function budgetMonthOf(entry) {
+  return entry.budgetMonth || (entry.date || "").slice(0, 7);
+}
+
 /** Everything the screens and reports need to know about one month. */
 export function summarizeMonth(month) {
-  const entries = data.tx.filter((t) => (t.date || "").slice(0, 7) === month);
+  const entries = data.tx.filter((t) => budgetMonthOf(t) === month);
   const incomes = entries.filter((t) => t.type === "income");
   const expenses = entries.filter((t) => t.type === "expense");
   const payments = data.pays.filter((p) => p.month === month);
@@ -76,6 +81,27 @@ export function summarizeMonth(month) {
     unpaidAmount: sum(unpaidBills, (b) => b.amount),
     creditPayments: sum(billsDue.filter((b) => b.kind === "credit"), (b) => b.amount),
   };
+}
+
+// ---------- Running balance ----------
+
+/**
+ * Money you have, counting every entry, bill payment and balance correction by the day it
+ * actually happened. With `upToDate` ("YYYY-MM-DD"), only what happened on or before that day.
+ * Unlike the monthly totals, nothing resets: leftover money carries on into the next month.
+ */
+export function balanceAt(upToDate = null) {
+  const counts = (date) => !upToDate || (date || "") <= upToDate;
+  let total = 0;
+  for (const t of data.tx) if (counts(t.date)) total += t.type === "income" ? t.amount : -t.amount;
+  for (const p of data.pays) if (counts(p.paidOn || p.month + "-01")) total -= p.amount;
+  for (const a of data.adjust) if (counts(a.date)) total += a.amount;
+  return total;
+}
+
+/** Balance corrections dated in a month. */
+export function adjustmentsIn(month) {
+  return data.adjust.filter((a) => (a.date || "").startsWith(month));
 }
 
 // ---------- "What you can reduce" hints ----------
@@ -170,6 +196,7 @@ export function monthReportText(month) {
   lines.push(`Spent (incl. paid bills): ${money(current.spent)}`, `Left over: ${money(current.left)}`);
   if (current.income) lines.push(`Savings rate: ${Math.round((current.left / current.income) * 100)}%`);
   lines.push(`Previous month: income ${money(previous.income)}, spent ${money(previous.spent)}`);
+  lines.push(`Running balance at end of month: ${money(balanceAt(`${month}-${daysInMonth(month)}`))}`);
 
   lines.push("", "## Spending by category (this month vs previous)");
   Object.entries(current.spentByCategory)
@@ -188,7 +215,8 @@ export function monthReportText(month) {
       bill.kind === "credit"
         ? "credit" + (bill.installments ? `, installment ${installmentNumber(bill, month)} of ${bill.installments}` : "")
         : "bill";
-    const status = paid ? "PAID " + (paid.paidOn || "") : "UNPAID";
+    const discount = paid?.discount ? `, paid ${money(paid.amount)} after ${money(paid.discount)} discount` : "";
+    const status = paid ? `PAID ${paid.paidOn || ""}${discount}` : "UNPAID";
     lines.push(`  - ${bill.name} (${kind}), due day ${bill.dueDay}: ${money(bill.amount)} — ${status}`);
   }
 
@@ -199,7 +227,8 @@ export function monthReportText(month) {
     .sort((a, b) => a.date.localeCompare(b.date))
     .forEach((t) => {
       const sign = t.type === "income" ? "+" : "-";
-      lines.push(`  - ${t.date} ${sign}${money(t.amount)} ${t.category}${t.note ? " — " + t.note : ""}`);
+      const counted = t.budgetMonth ? ` (counts toward ${monthLabel(month)})` : "";
+      lines.push(`  - ${t.date} ${sign}${money(t.amount)} ${t.category}${t.note ? " — " + t.note : ""}${counted}`);
     });
 
   return lines.join("\n");
@@ -220,19 +249,23 @@ function toCsv(rows) {
 
 /** Spreadsheet of entries and bill payments, for one month or (with null) everything. */
 export function entriesCsv(month = null) {
-  const inMonth = (date) => !month || date.startsWith(month);
   const rows = [];
 
-  for (const t of data.tx.filter((t) => inMonth(t.date))) {
-    rows.push([t.date, t.type, t.category, t.amount, t.note || "", "entry"]);
+  for (const t of data.tx.filter((t) => !month || budgetMonthOf(t) === month)) {
+    rows.push([t.date, budgetMonthOf(t), t.type, t.category, t.amount, t.note || "", "entry"]);
   }
   for (const p of data.pays.filter((p) => !month || p.month === month)) {
     const source = p.kind === "credit" ? "credit payment" : "bill payment";
-    rows.push([p.paidOn || p.month + "-01", "expense", p.category, p.amount, p.name, source]);
+    const note = p.discount ? `${p.name} (discount ${p.discount})` : p.name;
+    rows.push([p.paidOn || p.month + "-01", p.month, "expense", p.category, p.amount, note, source]);
+  }
+
+  for (const a of data.adjust.filter((a) => !month || (a.date || "").startsWith(month))) {
+    rows.push([a.date, a.date.slice(0, 7), "adjustment", "", a.amount, a.note || "", "balance correction"]);
   }
 
   rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return toCsv([["date", "type", "category", "amount_idr", "note", "source"], ...rows]);
+  return toCsv([["date", "budget_month", "type", "category", "amount_idr", "note", "source"], ...rows]);
 }
 
 /** Full backup file contents. */

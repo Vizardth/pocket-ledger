@@ -3,39 +3,29 @@
 import { data, settings, loadAll, saveData, saveSettings, replaceData, onSave } from "./storage.js";
 import { ui } from "./state.js";
 import { render } from "./views.js";
-import { paymentFor, dueDayIn } from "./finance.js";
-import { openEntrySheet, openBillSheet, closeSheet } from "./sheets.js";
+import { paymentFor } from "./finance.js";
+import { openEntrySheet, openBillSheet, openPaySheet, openBalanceSheet, closeSheet } from "./sheets.js";
 import { addCategory, removeCategory } from "./categories.js";
 import { exportFile, copyReport, restoreFromFile, hasData } from "./files.js";
 import { analyzeMonth } from "./claude-api.js";
 import { scheduleReminders, setRemindersEnabled, initReminders } from "./reminders.js";
-import { addMonths, newId, pad2, toast, todayISO, thisMonth } from "./utils.js";
+import { addMonths, toast } from "./utils.js";
 
 // ---------- Actions ----------
 
-/** Tick a bill as paid for the month on screen, or untick it. */
+/** Pay a bill for the month on screen (opens the pay sheet), or untick it. */
 function toggleBillPaid(billId) {
   const bill = data.bills.find((b) => b.id === billId);
   if (!bill) return;
   const month = ui.month;
   const existing = paymentFor(billId, month);
 
-  if (existing) {
-    data.pays = data.pays.filter((p) => p !== existing);
-    toast(`${bill.name} marked unpaid`);
-  } else {
-    data.pays.push({
-      id: newId(),
-      billId,
-      month,
-      name: bill.name,
-      category: bill.category,
-      kind: bill.kind,
-      amount: bill.amount,
-      paidOn: month === thisMonth ? todayISO : `${month}-${pad2(dueDayIn(bill, month))}`,
-    });
-    toast(`${bill.name} paid`);
+  if (!existing) {
+    openPaySheet(bill, month);
+    return;
   }
+  data.pays = data.pays.filter((p) => p !== existing);
+  toast(`${bill.name} marked unpaid`);
   saveData();
   render();
 }
@@ -92,6 +82,7 @@ const BUTTON_ACTIONS = {
   next: () => { ui.month = addMonths(ui.month, 1); render(); },
   add: () => openEntrySheet(),
   newBill: () => openBillSheet(),
+  setBalance: () => openBalanceSheet(),
   copyRep: () => copyReport(),
   askAI: () => analyzeMonth(),
   saveKey: saveApiSettings,

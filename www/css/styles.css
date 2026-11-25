@@ -495,6 +495,12 @@ textarea:focus-visible {
 
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
+/* "Counts toward next month's budget" tick box on income entries */
+.checkfield { display: flex; align-items: flex-start; gap: 10px; font-size: 0.92rem; }
+.checkfield[hidden] { display: none; }
+.checkfield input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
+.checkfield .small { display: block; margin-top: 2px; }
+
 .sheet-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 
 /* ---------- Feedback ---------- */
@@ -588,3 +594,14 @@ textarea:focus-visible {
 
 .cat-row:last-child { border-bottom: 0; }
 .cat-row .btn.small { padding: 6px 10px; }
+
+/* ---------- Running balance (Ledger card) ---------- */
+
+.hero .label-row .label { margin: 0; }
+.hero-link { color: var(--accent-ink); opacity: 0.85; text-decoration: underline; }
+.hero-btn {
+  align-self: flex-start;
+  border-color: color-mix(in srgb, var(--accent-ink) 50%, transparent);
+  background: transparent;
+  color: var(--accent-ink);
+}

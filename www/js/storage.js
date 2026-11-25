@@ -10,9 +10,10 @@ export const IS_NATIVE = Boolean(window.Cap && window.Cap.Capacitor.isNativePlat
 
 /** All money records. Mutated in place, then saved with saveData(). */
 export const data = {
-  tx: [],    // { id, type: "income"|"expense", amount, category, date, note, createdAt }
+  tx: [],    // { id, type: "income"|"expense", amount, category, date, note, createdAt, budgetMonth? }
   bills: [], // { id, name, amount, dueDay, kind: "bill"|"credit", category, startMonth, installments }
-  pays: [],  // { id, billId, month, name, category, kind, amount, paidOn }
+  pays: [],  // { id, billId, month, name, category, kind, amount (actually paid), paidOn, billed?, discount? }
+  adjust: [], // { id, date, amount (+/-), note } balance corrections; never counted as income or spending
   cats: { income: [...INCOME_CATEGORIES], expense: [...EXPENSE_CATEGORIES] }, // your category lists
 };
 
@@ -49,10 +50,11 @@ export async function loadAll() {
 }
 
 /** Swap in a whole new set of records (used by restore and "delete all"). */
-export function replaceData({ tx = [], bills = [], pays = [], cats = null }) {
+export function replaceData({ tx = [], bills = [], pays = [], adjust = [], cats = null }) {
   data.tx = tx;
   data.bills = bills;
   data.pays = pays;
+  data.adjust = adjust; // older saves have none
   // Older saves and backups have no category list, and "delete all" passes none:
   // in both cases keep the current list.
   if (Array.isArray(cats?.income) && Array.isArray(cats?.expense) && cats.income.length && cats.expense.length) {

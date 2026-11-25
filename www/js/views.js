@@ -6,12 +6,15 @@ import { LOCKED_CATEGORIES } from "./categories.js";
 import { ui } from "./state.js";
 import {
   summarizeMonth, billsForMonth, paymentFor, savingHints,
-  installmentNumber, dueDayIn,
+  installmentNumber, dueDayIn, balanceAt, adjustmentsIn,
 } from "./finance.js";
 import {
   money, sum, escapeHtml as esc, addMonths, monthLabel, dayLabel,
-  thisMonth, now,
+  thisMonth, now, daysInMonth,
 } from "./utils.js";
+
+/** "Rp 1.000" or "−Rp 1.000". */
+const signedMoney = (amount) => `${amount < 0 ? "−" : ""}${money(Math.abs(amount))}`;
 
 // ---------- Ledger tab ----------
 
@@ -23,15 +26,15 @@ function ledgerView() {
   // Group entries and bill payments by day, newest first.
   const byDay = {};
   for (const t of s.entries) (byDay[t.date] ||= []).push(t);
-  for (const p of s.payments) {
-    const day = p.paidOn && p.paidOn.startsWith(month) ? p.paidOn : `${month}-01`;
-    (byDay[day] ||= []).push({ ...p, isPayment: true });
-  }
+  // Payments sit on the day they were actually paid, even when that was the month before
+  // (paying ahead), just like salary that counts toward this month.
+  for (const p of s.payments) (byDay[p.paidOn || `${month}-01`] ||= []).push({ ...p, isPayment: true });
+  for (const a of adjustmentsIn(month)) (byDay[a.date] ||= []).push({ ...a, isAdjustment: true });
   const days = Object.keys(byDay).sort().reverse();
 
   const dayGroups = days.map((day) => {
     const items = byDay[day];
-    const net = sum(items, (t) => (t.type === "income" ? t.amount : -t.amount));
+    const net = sum(items, (t) => (t.isAdjustment || t.type === "income" ? t.amount : -t.amount));
     return `
       <div class="dayhead">
         <span>${dayLabel(day)}</span>
@@ -49,18 +52,31 @@ function ledgerView() {
       <div class="meter"><i style="width:${Math.round((paidCount / s.billsDue.length) * 100)}%"></i></div>
     </div>` : "";
 
+  // Past months show the balance at their last day; this month and later show it as of now.
+  const isPast = month < thisMonth;
+  const balance = isPast ? balanceAt(`${month}-${daysInMonth(month)}`) : balanceAt();
+  const monthShort = monthLabel(month, true).split(" ")[0];
+  const setPrompt = !data.adjust.length && !isPast
+    ? `<button class="btn hero-btn" id="setBalance">Set starting balance</button>` : "";
+
   return `
     <div class="stack-lg">
       <section class="hero">
         <div>
-          <div class="label">Left this month</div>
-          <div class="left">${s.left < 0 ? "−" : ""}${money(Math.abs(s.left))}</div>
+          <div class="label-row">
+            <span class="label">${isPast ? `Balance at end of ${monthShort}` : "Balance"}</span>
+            ${data.adjust.length && !isPast ? `<button class="linkbtn hero-link" id="setBalance">Correct</button>` : ""}
+          </div>
+          <div class="left">${signedMoney(balance)}</div>
         </div>
         <div class="split">
-          <div><span class="label">Income</span><span class="num">${money(s.income)}</span></div>
-          <div><span class="label">Spent</span><span class="num">${money(s.spent)}</span></div>
+          <div><span class="label">Spent in ${monthShort}</span><span class="num">${money(s.spent)}</span></div>
+          ${isPast
+            ? `<div><span class="label">Income in ${monthShort}</span><span class="num">${money(s.income)}</span></div>`
+            : `<div><span class="label">After ${monthShort} bills</span><span class="num">${signedMoney(balance - s.unpaidAmount)}</span></div>`}
         </div>
         ${billProgress}
+        ${setPrompt}
       </section>
       <section class="stack-sm">
         <h2>Ledger</h2>
@@ -72,10 +88,17 @@ function ledgerView() {
 }
 
 function ledgerRow(item) {
+  if (item.isAdjustment) {
+    return `
+      <div class="row">
+        <div class="main"><div class="t">${esc(item.note || "Balance correction")}</div><div class="s">Balance correction · not income or spending</div></div>
+        <div class="num">${item.amount > 0 ? "+" : "−"}${money(Math.abs(item.amount))}</div>
+      </div>`;
+  }
   if (item.isPayment) {
     return `
       <div class="row">
-        <div class="main"><div class="t">${esc(item.name)}</div><div class="s">${esc(item.category)} · bill paid</div></div>
+        <div class="main"><div class="t">${esc(item.name)}</div><div class="s">${esc(item.category)} · bill paid${item.discount ? ` · saved ${money(item.discount)}` : ""}</div></div>
         <div class="num">−${money(item.amount)}</div>
       </div>`;
   }
@@ -146,7 +169,7 @@ function billRow(bill, month) {
         <div class="t">${esc(bill.name)}</div>
         <div class="s">Due ${dueDay} ${monthShort} ${creditTag} ${statusTag}</div>
       </button>
-      <div class="num">${money(bill.amount)}</div>
+      <div class="num">${money(paid ? paid.amount : bill.amount)}</div>
     </div>`;
 }
 

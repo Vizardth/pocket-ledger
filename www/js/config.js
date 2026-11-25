@@ -19,6 +19,10 @@ export const EXPENSE_CATEGORIES = [
 // Categories that are usually easiest to cut back on. Used by the "what you can reduce" hints.
 export const FLEXIBLE_CATEGORIES = ["Food & drinks", "Shopping", "Entertainment", "Other", "Transport"];
 
+// Income received on or after this day defaults to counting toward next month's budget
+// (salary on the 25th pays for the month ahead). You can untick it on any entry.
+export const PAYDAY_ROLLOVER_DAY = 25;
+
 export const BILL_CATEGORY = "Bills & utilities";
 export const CREDIT_CATEGORY = "Credit & installments";
 
