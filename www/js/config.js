@@ -23,6 +23,16 @@ export const FLEXIBLE_CATEGORIES = ["Food & drinks", "Shopping", "Entertainment"
 // (salary on the 25th pays for the month ahead). You can untick it on any entry.
 export const PAYDAY_ROLLOVER_DAY = 25;
 
+// Where money sits. Every entry, bill payment and balance correction belongs to one of these;
+// transfers move money between them.
+export const ACCOUNTS = [
+  { id: "cash", label: "Cash" },
+  { id: "digital", label: "ATM / Digital" },
+];
+
+// Entries saved before accounts existed have no account; they count as this one.
+export const DEFAULT_ACCOUNT = "digital";
+
 export const BILL_CATEGORY = "Bills & utilities";
 export const CREDIT_CATEGORY = "Credit & installments";
 

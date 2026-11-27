@@ -10,10 +10,12 @@ export const IS_NATIVE = Boolean(window.Cap && window.Cap.Capacitor.isNativePlat
 
 /** All money records. Mutated in place, then saved with saveData(). */
 export const data = {
-  tx: [],    // { id, type: "income"|"expense", amount, category, date, note, createdAt, budgetMonth? }
+  // `account` is "cash" or "digital" (missing on older records = DEFAULT_ACCOUNT).
+  tx: [],    // { id, type: "income"|"expense", amount, category, date, note, createdAt, budgetMonth?, account }
   bills: [], // { id, name, amount, dueDay, kind: "bill"|"credit", category, startMonth, installments }
-  pays: [],  // { id, billId, month, name, category, kind, amount (actually paid), paidOn, billed?, discount? }
-  adjust: [], // { id, date, amount (+/-), note } balance corrections; never counted as income or spending
+  pays: [],  // { id, billId, month, name, category, kind, amount (actually paid), paidOn, billed?, discount?, account }
+  adjust: [], // { id, date, amount (+/-), note, account } balance corrections; never counted as income or spending
+  transfers: [], // { id, date, amount, from, to, note, createdAt } money moved between accounts; total unchanged
   cats: { income: [...INCOME_CATEGORIES], expense: [...EXPENSE_CATEGORIES] }, // your category lists
 };
 
@@ -24,6 +26,7 @@ export const settings = {
   workspace: "",
   lastBackup: 0,
   reminders: false,
+  lastAccount: "", // account picked on the last new entry, preselected next time
 };
 
 async function read(key) {
@@ -50,11 +53,12 @@ export async function loadAll() {
 }
 
 /** Swap in a whole new set of records (used by restore and "delete all"). */
-export function replaceData({ tx = [], bills = [], pays = [], adjust = [], cats = null }) {
+export function replaceData({ tx = [], bills = [], pays = [], adjust = [], transfers = [], cats = null }) {
   data.tx = tx;
   data.bills = bills;
   data.pays = pays;
   data.adjust = adjust; // older saves have none
+  data.transfers = transfers; // older saves have none
   // Older saves and backups have no category list, and "delete all" passes none:
   // in both cases keep the current list.
   if (Array.isArray(cats?.income) && Array.isArray(cats?.expense) && cats.income.length && cats.expense.length) {

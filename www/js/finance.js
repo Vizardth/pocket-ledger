@@ -1,7 +1,7 @@
 // Money calculations: monthly totals, bills due, savings hints and exports.
 // Pure functions over the saved data; nothing here touches the screen.
 
-import { FLEXIBLE_CATEGORIES } from "./config.js";
+import { FLEXIBLE_CATEGORIES, ACCOUNTS, DEFAULT_ACCOUNT } from "./config.js";
 import { data } from "./storage.js";
 import { money, sum, addMonths, monthsBetween, monthLabel, daysInMonth } from "./utils.js";
 
@@ -83,25 +83,65 @@ export function summarizeMonth(month) {
   };
 }
 
+// ---------- Accounts (cash vs ATM/digital) ----------
+
+/** "cash" or "digital" for an entry, payment or correction. Older records count as DEFAULT_ACCOUNT. */
+export function accountOf(record) {
+  return ACCOUNTS.some((a) => a.id === record?.account) ? record.account : DEFAULT_ACCOUNT;
+}
+
+/** "Cash" or "ATM / Digital". */
+export function accountLabel(id) {
+  return (ACCOUNTS.find((a) => a.id === id) || ACCOUNTS.find((a) => a.id === DEFAULT_ACCOUNT)).label;
+}
+
+/** The other account, e.g. otherAccount("cash") -> "digital". */
+export function otherAccount(id) {
+  return ACCOUNTS.find((a) => a.id !== id).id;
+}
+
 // ---------- Running balance ----------
 
 /**
  * Money you have, counting every entry, bill payment and balance correction by the day it
  * actually happened. With `upToDate` ("YYYY-MM-DD"), only what happened on or before that day.
  * Unlike the monthly totals, nothing resets: leftover money carries on into the next month.
+ *
+ * With `account` ("cash" or "digital"), only that account, including transfers in and out.
+ * Transfers never change the total. `excludeTransferId` leaves one transfer out (while editing it).
  */
-export function balanceAt(upToDate = null) {
+export function balanceAt(upToDate = null, account = null, excludeTransferId = null) {
   const counts = (date) => !upToDate || (date || "") <= upToDate;
+  const mine = (record) => !account || accountOf(record) === account;
   let total = 0;
-  for (const t of data.tx) if (counts(t.date)) total += t.type === "income" ? t.amount : -t.amount;
-  for (const p of data.pays) if (counts(p.paidOn || p.month + "-01")) total -= p.amount;
-  for (const a of data.adjust) if (counts(a.date)) total += a.amount;
+  for (const t of data.tx) if (counts(t.date) && mine(t)) total += t.type === "income" ? t.amount : -t.amount;
+  for (const p of data.pays) if (counts(p.paidOn || p.month + "-01") && mine(p)) total -= p.amount;
+  for (const a of data.adjust) if (counts(a.date) && mine(a)) total += a.amount;
+  if (account) {
+    for (const t of data.transfers) {
+      if (t.id === excludeTransferId || !counts(t.date)) continue;
+      if (t.from === account) total -= t.amount;
+      if (t.to === account) total += t.amount;
+    }
+  }
   return total;
+}
+
+/** Total plus each account's balance: { total, cash, digital }. */
+export function balancesAt(upToDate = null) {
+  const result = { total: balanceAt(upToDate) };
+  for (const { id } of ACCOUNTS) result[id] = balanceAt(upToDate, id);
+  return result;
 }
 
 /** Balance corrections dated in a month. */
 export function adjustmentsIn(month) {
   return data.adjust.filter((a) => (a.date || "").startsWith(month));
+}
+
+/** Transfers between accounts dated in a month. */
+export function transfersIn(month) {
+  return data.transfers.filter((t) => (t.date || "").startsWith(month));
 }
 
 // ---------- "What you can reduce" hints ----------
@@ -196,7 +236,9 @@ export function monthReportText(month) {
   lines.push(`Spent (incl. paid bills): ${money(current.spent)}`, `Left over: ${money(current.left)}`);
   if (current.income) lines.push(`Savings rate: ${Math.round((current.left / current.income) * 100)}%`);
   lines.push(`Previous month: income ${money(previous.income)}, spent ${money(previous.spent)}`);
-  lines.push(`Running balance at end of month: ${money(balanceAt(`${month}-${daysInMonth(month)}`))}`);
+  const endBalances = balancesAt(`${month}-${daysInMonth(month)}`);
+  lines.push(`Running balance at end of month: ${money(endBalances.total)}`);
+  for (const { id, label } of ACCOUNTS) lines.push(`  - ${label}: ${money(endBalances[id])}`);
 
   lines.push("", "## Spending by category (this month vs previous)");
   Object.entries(current.spentByCategory)
@@ -216,7 +258,7 @@ export function monthReportText(month) {
         ? "credit" + (bill.installments ? `, installment ${installmentNumber(bill, month)} of ${bill.installments}` : "")
         : "bill";
     const discount = paid?.discount ? `, paid ${money(paid.amount)} after ${money(paid.discount)} discount` : "";
-    const status = paid ? `PAID ${paid.paidOn || ""}${discount}` : "UNPAID";
+    const status = paid ? `PAID ${paid.paidOn || ""} from ${accountLabel(accountOf(paid))}${discount}` : "UNPAID";
     lines.push(`  - ${bill.name} (${kind}), due day ${bill.dueDay}: ${money(bill.amount)} — ${status}`);
   }
 
@@ -228,8 +270,16 @@ export function monthReportText(month) {
     .forEach((t) => {
       const sign = t.type === "income" ? "+" : "-";
       const counted = t.budgetMonth ? ` (counts toward ${monthLabel(month)})` : "";
-      lines.push(`  - ${t.date} ${sign}${money(t.amount)} ${t.category}${t.note ? " — " + t.note : ""}${counted}`);
+      lines.push(`  - ${t.date} ${sign}${money(t.amount)} ${t.category} [${accountLabel(accountOf(t))}]${t.note ? " — " + t.note : ""}${counted}`);
     });
+
+  const transfers = transfersIn(month).slice().sort((a, b) => a.date.localeCompare(b.date));
+  if (transfers.length) {
+    lines.push("", "## Transfers between cash and ATM/digital (not income or spending)");
+    for (const t of transfers) {
+      lines.push(`  - ${t.date} ${money(t.amount)} ${accountLabel(t.from)} → ${accountLabel(t.to)}${t.note ? " — " + t.note : ""}`);
+    }
+  }
 
   return lines.join("\n");
 }
@@ -252,20 +302,25 @@ export function entriesCsv(month = null) {
   const rows = [];
 
   for (const t of data.tx.filter((t) => !month || budgetMonthOf(t) === month)) {
-    rows.push([t.date, budgetMonthOf(t), t.type, t.category, t.amount, t.note || "", "entry"]);
+    rows.push([t.date, budgetMonthOf(t), t.type, t.category, t.amount, t.note || "", "entry", accountOf(t)]);
   }
   for (const p of data.pays.filter((p) => !month || p.month === month)) {
     const source = p.kind === "credit" ? "credit payment" : "bill payment";
     const note = p.discount ? `${p.name} (discount ${p.discount})` : p.name;
-    rows.push([p.paidOn || p.month + "-01", p.month, "expense", p.category, p.amount, note, source]);
+    rows.push([p.paidOn || p.month + "-01", p.month, "expense", p.category, p.amount, note, source, accountOf(p)]);
   }
 
   for (const a of data.adjust.filter((a) => !month || (a.date || "").startsWith(month))) {
-    rows.push([a.date, a.date.slice(0, 7), "adjustment", "", a.amount, a.note || "", "balance correction"]);
+    rows.push([a.date, a.date.slice(0, 7), "adjustment", "", a.amount, a.note || "", "balance correction", accountOf(a)]);
+  }
+
+  // A transfer's account column reads "digital>cash" (from > to).
+  for (const t of data.transfers.filter((t) => !month || (t.date || "").startsWith(month))) {
+    rows.push([t.date, t.date.slice(0, 7), "transfer", "", t.amount, t.note || "", "transfer", `${t.from}>${t.to}`]);
   }
 
   rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return toCsv([["date", "budget_month", "type", "category", "amount_idr", "note", "source"], ...rows]);
+  return toCsv([["date", "budget_month", "type", "category", "amount_idr", "note", "source", "account"], ...rows]);
 }
 
 /** Full backup file contents. */

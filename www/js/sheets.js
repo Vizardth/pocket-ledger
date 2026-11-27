@@ -1,11 +1,11 @@
 // Bottom-sheet forms for adding and editing entries and bills.
 
-import { BILL_CATEGORY, CREDIT_CATEGORY, PAYDAY_ROLLOVER_DAY } from "./config.js";
+import { BILL_CATEGORY, CREDIT_CATEGORY, PAYDAY_ROLLOVER_DAY, ACCOUNTS, DEFAULT_ACCOUNT } from "./config.js";
 import { categoriesFor, addCategory } from "./categories.js";
-import { data, saveData } from "./storage.js";
+import { data, saveData, settings, saveSettings } from "./storage.js";
 import { ui } from "./state.js";
 import { render } from "./views.js";
-import { dueDayIn, balanceAt } from "./finance.js";
+import { dueDayIn, balanceAt, accountOf, accountLabel, otherAccount } from "./finance.js";
 import {
   escapeHtml as esc, parseAmount, groupDigits, newId, toast, todayISO, thisMonth,
   addMonths, monthLabel, money, pad2,
@@ -94,6 +94,33 @@ function bindSegment(form, attribute, onChange) {
   });
 }
 
+// ---------- Cash or ATM/digital ----------
+
+/** A Cash | ATM / Digital picker. Wire it with bindSegment(form, "acct", ...). */
+function accountPicker(selected, label) {
+  return `
+    <div class="field">
+      <span class="field-label" id="acctLabel">${label}</span>
+      <div class="seg" role="group" aria-labelledby="acctLabel">
+        ${ACCOUNTS.map((a) =>
+          `<button type="button" data-acct="${a.id}" aria-pressed="${a.id === selected}">${a.label}</button>`).join("")}
+      </div>
+    </div>`;
+}
+
+/** The account picked last time on a new entry or payment, so it's preselected next time. */
+function preferredAccount() {
+  return ACCOUNTS.some((a) => a.id === settings.lastAccount) ? settings.lastAccount : DEFAULT_ACCOUNT;
+}
+
+function rememberAccount(id) {
+  if (settings.lastAccount === id) return;
+  settings.lastAccount = id;
+  saveSettings();
+}
+
+const accountPrompt = (type) => (type === "income" ? "Received in" : "Paid with");
+
 // ---------- Income / expense entry ----------
 
 const notePlaceholder = (type) => (type === "income" ? "e.g. Freelance design job" : "e.g. Lunch, Grab to office");
@@ -107,6 +134,7 @@ const defaultsToNextMonth = (date) => Number((date || todayISO).slice(8, 10)) >=
 /** Add a new entry, or edit `entry` when given. */
 export function openEntrySheet(entry = null) {
   let type = entry?.type || "expense";
+  let account = entry ? accountOf(entry) : preferredAccount();
   const defaultDate = entry?.date || (ui.month === thisMonth ? todayISO : ui.month + "-01");
   let countsNext = entry ? Boolean(entry.budgetMonth) : defaultsToNextMonth(defaultDate);
   let countsNextTouched = Boolean(entry); // don't overwrite a choice already made
@@ -121,6 +149,7 @@ export function openEntrySheet(entry = null) {
       <label for="f-amt">Amount (Rp)</label>
       <input id="f-amt" name="amount" class="bigamt" inputmode="numeric" data-money autocomplete="off" value="${groupDigits(entry?.amount)}" autofocus>
     </div>
+    ${accountPicker(account, accountPrompt(type))}
     <div class="two">
       <div class="field">
         <div class="label-row">
@@ -164,7 +193,9 @@ export function openEntrySheet(entry = null) {
       category: form.get("category"),
       date,
       note: String(form.get("note") || "").trim(),
+      account,
     };
+    if (!entry) rememberAccount(account);
     if (type === "income" && countsNext) fields.budgetMonth = monthAfter(date);
     if (entry) {
       delete entry.budgetMonth; // re-set below only if still ticked
@@ -235,62 +266,159 @@ export function openEntrySheet(entry = null) {
     catSelect.innerHTML = optionsHtml(categoriesFor(type));
     form.querySelector("#f-note").placeholder = notePlaceholder(type);
     nextWrap.hidden = type !== "income";
+    form.querySelector("#acctLabel").textContent = accountPrompt(type);
     showCatAdd(false);
   });
+  bindSegment(form, "acct", (value) => (account = value));
 }
 
 // ---------- Setting the balance ----------
 
-/** Set the running balance to what you really have; the difference is saved as a correction. */
+/**
+ * Set cash and ATM/digital to what you really have. Each account that differs gets its own
+ * correction, so neither is counted as income or spending. A field left empty is unchanged.
+ */
 export function openBalanceSheet() {
-  const current = balanceAt();
+  const current = Object.fromEntries(ACCOUNTS.map(({ id }) => [id, balanceAt(null, id)]));
   const isFirst = !data.adjust.length;
+
+  const fields = ACCOUNTS.map(({ id, label }) => `
+    <div class="field">
+      <label for="a-${id}">${label} now (Rp)</label>
+      <input id="a-${id}" name="${id}" class="bigamt" inputmode="numeric" data-money autocomplete="off"
+        placeholder="${isFirst ? "0" : groupDigits(Math.max(0, current[id])) || "0"}">
+      <div class="muted small" id="a-diff-${id}">${isFirst ? "" : `App has ${money(current[id])}. Leave empty to keep.`}</div>
+    </div>`).join("");
 
   const html = `
     <h2>${isFirst ? "Set your starting balance" : "Correct your balance"}</h2>
     <div class="muted small">${isFirst
-      ? "Add up what you have right now: bank accounts, e-wallets and cash. From here on the app adds income and subtracts spending."
-      : `The app thinks you have ${money(current)}. If your bank, e-wallets and cash add up to something else, enter the real total.`}</div>
-    <div class="field">
-      <label for="a-amt">What you have now (Rp)</label>
-      <input id="a-amt" name="amount" class="bigamt" inputmode="numeric" data-money autocomplete="off" autofocus>
-    </div>
+      ? "Count the cash in your wallet, and add up your bank accounts and e-wallets. From here on the app adds income and subtracts spending from the one you pick."
+      : "If your cash or your bank and e-wallets add up to something else than the app shows, enter the real amount."}</div>
+    ${fields}
     <div class="field">
       <label for="a-note">Note</label>
       <input id="a-note" name="note" maxlength="80" placeholder="${isFirst ? "Starting balance" : "e.g. Forgot some cash purchases"}">
-    </div>
-    <div class="muted small" id="a-diff"></div>`;
+    </div>`;
 
   const onSubmit = (form) => {
-    const raw = String(form.get("amount") || "").trim();
-    if (!raw) {
-      toast("Enter how much you have now.");
-      return false;
+    const note = String(form.get("note") || "").trim() || (isFirst ? "Starting balance" : "Balance correction");
+    let changed = 0;
+    for (const { id } of ACCOUNTS) {
+      const raw = String(form.get(id) || "").trim();
+      if (!raw) continue;
+      const difference = parseAmount(raw) - current[id];
+      if (!difference) continue;
+      data.adjust.push({ id: newId(), date: todayISO, amount: difference, note, account: id });
+      changed++;
     }
-    const difference = parseAmount(raw) - current;
-    if (!difference) {
-      toast("Already matches. Nothing to change.");
-      return;
+    if (!changed) {
+      toast(isFirst ? "Enter how much you have now." : "Already matches. Nothing to change.");
+      return isFirst ? false : undefined;
     }
-    data.adjust.push({
-      id: newId(),
-      date: todayISO,
-      amount: difference,
-      note: String(form.get("note") || "").trim() || (isFirst ? "Starting balance" : "Balance correction"),
-    });
     saveData();
     toast(isFirst ? "Starting balance set" : "Balance corrected");
     render();
   };
 
   const form = openSheet(html, onSubmit);
-  const diff = form.querySelector("#a-diff");
-  form.querySelector("#a-amt").addEventListener("input", (e) => {
-    const change = parseAmount(e.target.value) - current;
-    diff.textContent = e.target.value && change
-      ? `Adds a correction of ${change > 0 ? "+" : "−"}${money(Math.abs(change))}. It isn't counted as income or spending.`
-      : "";
+  for (const { id } of ACCOUNTS) {
+    const hint = form.querySelector(`#a-diff-${id}`);
+    form.querySelector(`#a-${id}`).addEventListener("input", (e) => {
+      const change = parseAmount(e.target.value) - current[id];
+      if (!e.target.value) hint.textContent = isFirst ? "" : `App has ${money(current[id])}. Leave empty to keep.`;
+      else if (!change) hint.textContent = "Matches. No change.";
+      else hint.textContent = `Correction of ${change > 0 ? "+" : "−"}${money(Math.abs(change))}. Not counted as income or spending.`;
+    });
+  }
+}
+
+// ---------- Moving money between cash and ATM/digital ----------
+
+/** Record a transfer (ATM withdrawal, cash deposit, top-up), or edit `transfer` when given. */
+export function openTransferSheet(transfer = null) {
+  let from = transfer?.from || "digital"; // most common: taking cash out at an ATM
+  const defaultDate = transfer?.date || (ui.month === thisMonth ? todayISO : ui.month + "-01");
+
+  const html = `
+    <h2>${transfer ? "Edit transfer" : "Move money"}</h2>
+    <div class="seg" role="group" aria-label="Direction">
+      ${ACCOUNTS.map((a) => `<button type="button" data-from="${a.id}" aria-pressed="${a.id === from}">
+        ${a.label} → ${accountLabel(otherAccount(a.id))}</button>`).join("")}
+    </div>
+    <div class="field">
+      <label for="t-amt">Amount (Rp)</label>
+      <input id="t-amt" name="amount" class="bigamt" inputmode="numeric" data-money autocomplete="off" value="${groupDigits(transfer?.amount)}" autofocus>
+    </div>
+    <div class="two">
+      <div class="field">
+        <label for="t-date">Date</label>
+        <input id="t-date" type="date" name="date" value="${defaultDate}">
+      </div>
+      <div class="field">
+        <label for="t-note">Note</label>
+        <input id="t-note" name="note" maxlength="80" placeholder="${noteFor(from)}" value="${esc(transfer?.note || "")}">
+      </div>
+    </div>
+    <div class="muted small" id="t-hint"></div>
+    <div class="muted small">A transfer only moves money. It isn't income or spending, and your total stays the same. If the ATM or bank charged a fee, add it as a separate expense.</div>`;
+
+  const onSubmit = (form) => {
+    const amount = parseAmount(form.get("amount"));
+    if (!amount) {
+      toast("Enter an amount above zero.");
+      return false;
+    }
+    const fields = {
+      date: form.get("date") || todayISO,
+      amount,
+      from,
+      to: otherAccount(from),
+      note: String(form.get("note") || "").trim(),
+    };
+    if (transfer) Object.assign(transfer, fields);
+    else data.transfers.push({ id: newId(), ...fields, createdAt: Date.now() });
+    saveData();
+    toast(`${transfer ? "Transfer updated" : "Moved"}: ${money(amount)} to ${accountLabel(fields.to)}`);
+    render();
+  };
+
+  const onDelete = transfer
+    ? () => {
+        data.transfers = data.transfers.filter((t) => t.id !== transfer.id);
+        saveData();
+        toast("Transfer deleted");
+        render();
+      }
+    : null;
+
+  const form = openSheet(html, onSubmit, onDelete);
+  const hint = form.querySelector("#t-hint");
+  const amountInput = form.querySelector("#t-amt");
+  const dateInput = form.querySelector("#t-date");
+
+  // Show what the source account has on that day, and warn when the transfer is more than that.
+  const updateHint = () => {
+    const available = balanceAt(dateInput.value || todayISO, from, transfer?.id);
+    const amount = parseAmount(amountInput.value);
+    const left = available - amount;
+    hint.textContent = amount
+      ? `${accountLabel(from)} after this: ${left < 0 ? "−" : ""}${money(Math.abs(left))}${left < 0 ? ". That's more than you have there." : ""}`
+      : `${accountLabel(from)} has ${available < 0 ? "−" : ""}${money(Math.abs(available))}.`;
+    hint.classList.toggle("warn-text", left < 0);
+  };
+  amountInput.addEventListener("input", updateHint);
+  dateInput.addEventListener("change", updateHint);
+  bindSegment(form, "from", (value) => {
+    from = value;
+    form.querySelector("#t-note").placeholder = noteFor(from);
+    updateHint();
   });
+  updateHint();
+}
+
+function noteFor(from) {
+  return from === "digital" ? "e.g. ATM withdrawal" : "e.g. Deposit, e-wallet top-up";
 }
 
 // ---------- Paying a bill ----------
@@ -299,6 +427,7 @@ export function openBalanceSheet() {
 export function openPaySheet(bill, month) {
   // Paying this month or ahead of time: today. Catching up on a past month: its due date.
   const defaultPaidOn = month >= thisMonth ? todayISO : `${month}-${pad2(dueDayIn(bill, month))}`;
+  let account = preferredAccount();
 
   const html = `
     <h2>Pay ${esc(bill.name)}</h2>
@@ -317,6 +446,7 @@ export function openPaySheet(bill, month) {
         <input id="p-date" type="date" name="paidOn" value="${defaultPaidOn}">
       </div>
     </div>
+    ${accountPicker(account, "Paid with")}
     <div class="muted small" id="p-total">You pay ${money(bill.amount)}</div>`;
 
   const onSubmit = (form) => {
@@ -339,7 +469,9 @@ export function openPaySheet(bill, month) {
       kind: bill.kind,
       amount: billed - discount,
       paidOn: form.get("paidOn") || defaultPaidOn,
+      account,
     };
+    rememberAccount(account);
     if (discount) Object.assign(payment, { billed, discount });
     data.pays.push(payment);
     saveData();
@@ -348,6 +480,7 @@ export function openPaySheet(bill, month) {
   };
 
   const form = openSheet(html, onSubmit);
+  bindSegment(form, "acct", (value) => (account = value));
   const total = form.querySelector("#p-total");
   form.addEventListener("input", () => {
     const paid = parseAmount(form.querySelector("#p-amt").value) - parseAmount(form.querySelector("#p-disc").value);

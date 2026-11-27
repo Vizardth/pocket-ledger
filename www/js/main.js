@@ -4,7 +4,7 @@ import { data, settings, loadAll, saveData, saveSettings, replaceData, onSave } 
 import { ui } from "./state.js";
 import { render } from "./views.js";
 import { paymentFor } from "./finance.js";
-import { openEntrySheet, openBillSheet, openPaySheet, openBalanceSheet, closeSheet } from "./sheets.js";
+import { openEntrySheet, openBillSheet, openPaySheet, openBalanceSheet, openTransferSheet, closeSheet } from "./sheets.js";
 import { addCategory, removeCategory } from "./categories.js";
 import { exportFile, copyReport, restoreFromFile, hasData } from "./files.js";
 import { analyzeMonth } from "./claude-api.js";
@@ -83,6 +83,7 @@ const BUTTON_ACTIONS = {
   add: () => openEntrySheet(),
   newBill: () => openBillSheet(),
   setBalance: () => openBalanceSheet(),
+  moveMoney: () => openTransferSheet(),
   copyRep: () => copyReport(),
   askAI: () => analyzeMonth(),
   saveKey: saveApiSettings,
@@ -106,7 +107,7 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button || button.closest("#sheetRoot")) return; // sheets handle their own buttons
 
-  const { tab, goto, editTx, editBill, pay, addCat, removeCat, catType } = button.dataset;
+  const { tab, goto, editTx, editTransfer, editBill, pay, addCat, removeCat, catType } = button.dataset;
   const exportKind = button.dataset.export;
 
   if (tab || goto) {
@@ -115,6 +116,9 @@ document.addEventListener("click", (event) => {
     window.scrollTo(0, 0);
   } else if (editTx) {
     openEntrySheet(data.tx.find((t) => t.id === editTx));
+  } else if (editTransfer) {
+    const transfer = data.transfers.find((t) => t.id === editTransfer);
+    if (transfer) openTransferSheet(transfer);
   } else if (editBill) {
     openBillSheet(data.bills.find((b) => b.id === editBill));
   } else if (pay) {

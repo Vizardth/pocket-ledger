@@ -1,12 +1,12 @@
 // Screens. Each view returns an HTML string for the current month; render() puts it on screen.
 
-import { CLAUDE_MODELS, BACKUP_REMINDER_DAYS } from "./config.js";
+import { CLAUDE_MODELS, BACKUP_REMINDER_DAYS, ACCOUNTS } from "./config.js";
 import { data, settings, IS_NATIVE } from "./storage.js";
 import { LOCKED_CATEGORIES } from "./categories.js";
 import { ui } from "./state.js";
 import {
   summarizeMonth, billsForMonth, paymentFor, savingHints,
-  installmentNumber, dueDayIn, balanceAt, adjustmentsIn,
+  installmentNumber, dueDayIn, balancesAt, adjustmentsIn, transfersIn, accountOf, accountLabel,
 } from "./finance.js";
 import {
   money, sum, escapeHtml as esc, addMonths, monthLabel, dayLabel,
@@ -30,11 +30,13 @@ function ledgerView() {
   // (paying ahead), just like salary that counts toward this month.
   for (const p of s.payments) (byDay[p.paidOn || `${month}-01`] ||= []).push({ ...p, isPayment: true });
   for (const a of adjustmentsIn(month)) (byDay[a.date] ||= []).push({ ...a, isAdjustment: true });
+  for (const t of transfersIn(month)) (byDay[t.date] ||= []).push({ ...t, isTransfer: true });
   const days = Object.keys(byDay).sort().reverse();
 
   const dayGroups = days.map((day) => {
     const items = byDay[day];
-    const net = sum(items, (t) => (t.isAdjustment || t.type === "income" ? t.amount : -t.amount));
+    // Transfers only move money between cash and ATM/digital, so they don't change the day's total.
+    const net = sum(items, (t) => (t.isTransfer ? 0 : t.isAdjustment || t.type === "income" ? t.amount : -t.amount));
     return `
       <div class="dayhead">
         <span>${dayLabel(day)}</span>
@@ -54,7 +56,8 @@ function ledgerView() {
 
   // Past months show the balance at their last day; this month and later show it as of now.
   const isPast = month < thisMonth;
-  const balance = isPast ? balanceAt(`${month}-${daysInMonth(month)}`) : balanceAt();
+  const balances = isPast ? balancesAt(`${month}-${daysInMonth(month)}`) : balancesAt();
+  const balance = balances.total;
   const monthShort = monthLabel(month, true).split(" ")[0];
   const setPrompt = !data.adjust.length && !isPast
     ? `<button class="btn hero-btn" id="setBalance">Set starting balance</button>` : "";
@@ -69,6 +72,10 @@ function ledgerView() {
           </div>
           <div class="left">${signedMoney(balance)}</div>
         </div>
+        <div class="split accounts">
+          ${ACCOUNTS.map(({ id, label }) => `
+            <div><span class="label">${label}</span><span class="num ${balances[id] < 0 ? "neg" : ""}">${signedMoney(balances[id])}</span></div>`).join("")}
+        </div>
         <div class="split">
           <div><span class="label">Spent in ${monthShort}</span><span class="num">${money(s.spent)}</span></div>
           ${isPast
@@ -76,7 +83,10 @@ function ledgerView() {
             : `<div><span class="label">After ${monthShort} bills</span><span class="num">${signedMoney(balance - s.unpaidAmount)}</span></div>`}
         </div>
         ${billProgress}
-        ${setPrompt}
+        <div class="hero-actions">
+          ${setPrompt}
+          <button class="btn hero-btn" id="moveMoney">Move money</button>
+        </div>
       </section>
       <section class="stack-sm">
         <h2>Ledger</h2>
@@ -91,20 +101,27 @@ function ledgerRow(item) {
   if (item.isAdjustment) {
     return `
       <div class="row">
-        <div class="main"><div class="t">${esc(item.note || "Balance correction")}</div><div class="s">Balance correction · not income or spending</div></div>
+        <div class="main"><div class="t">${esc(item.note || "Balance correction")}</div><div class="s">Balance correction · ${accountLabel(accountOf(item))}</div></div>
         <div class="num">${item.amount > 0 ? "+" : "−"}${money(Math.abs(item.amount))}</div>
       </div>`;
+  }
+  if (item.isTransfer) {
+    return `
+      <button class="row" data-edit-transfer="${item.id}">
+        <div class="main"><div class="t">${esc(item.note || "Transfer")}</div><div class="s">${accountLabel(item.from)} → ${accountLabel(item.to)} · not income or spending</div></div>
+        <div class="num muted">${money(item.amount)}</div>
+      </button>`;
   }
   if (item.isPayment) {
     return `
       <div class="row">
-        <div class="main"><div class="t">${esc(item.name)}</div><div class="s">${esc(item.category)} · bill paid${item.discount ? ` · saved ${money(item.discount)}` : ""}</div></div>
+        <div class="main"><div class="t">${esc(item.name)}</div><div class="s">${esc(item.category)} · bill paid · ${accountLabel(accountOf(item))}${item.discount ? ` · saved ${money(item.discount)}` : ""}</div></div>
         <div class="num">−${money(item.amount)}</div>
       </div>`;
   }
   const isIncome = item.type === "income";
   const title = item.note || item.category;
-  const subtitle = item.note ? item.category : isIncome ? "Income" : "Expense";
+  const subtitle = `${item.note ? item.category : isIncome ? "Income" : "Expense"} · ${accountLabel(accountOf(item))}`;
   return `
     <button class="row" data-edit-tx="${item.id}">
       <div class="main"><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div></div>
